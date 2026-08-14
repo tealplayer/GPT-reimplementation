@@ -1,7 +1,28 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 with open('input.txt', 'r', encoding='utf-8') as file:
     file_content = file.read()
+
+class Head(nn.Module):
+    def __init__(self, d_model, d_k, d_v):
+        super().__init__()
+        self.W_Q = nn.Linear(d_model, d_k, bias=False)
+        self.W_K = nn.Linear(d_model, d_k, bias=False)
+        self.W_V = nn.Linear(d_model, d_v, bias=False)
+
+    def forward(self, x):
+        Q = x @ self.W_Q
+        K = x @ self.W_K
+        V = x @ self.W_V
+
+        d_k = Q.shape[-1]
+        scores = Q @ K.transpose(-2, -1) / (d_k**0.5)
+        weights = F.softmax(scores, dim=-1)
+
+        out = weights @ V
+        return out
 
 sorted_chars = sorted(set(file_content))
 
