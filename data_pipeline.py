@@ -2,8 +2,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+torch.manual_seed(1337)
+
 with open('input.txt', 'r', encoding='utf-8') as file:
     file_content = file.read()
+
+# hyperparameters
+batch_size = 32
+block_size = 256
+d_model = 64
+num_heads = 4
+n_layers = 4
+d_ff = 4 * d_model
 
 class Head(nn.Module):
     def __init__(self, d_model, d_k, d_v):
@@ -13,20 +23,94 @@ class Head(nn.Module):
         self.W_V = nn.Linear(d_model, d_v, bias=False)
 
     def forward(self, x):
-        Q = x @ self.W_Q
-        K = x @ self.W_K
-        V = x @ self.W_V
-
+        Q = self.W_Q(x) # Query matrix
+        K = self.W_K(x) # Key matrix - sequence of vectors that can potentially answer the queries
+        V = self.W_V(x) # Value matrix - used to update the embeddings(EX: you want the embedding of one word that's related to another to cause a change to
+                        # that other word that more specifically encodes the now better known description now that you have that new context)
         d_k = Q.shape[-1]
-        scores = Q @ K.transpose(-2, -1) / (d_k**0.5)
+        scores = Q @ K.transpose(-2, -1) / (d_k**0.5) # computes a dot product to see how well each key matches each query(larger dot product = more aligned)
+        
+        # mask the scores()
+        T = scores.shape[-1]
+        mask = torch.tril(torch.ones(T, T)).bool() # make sure to stop having it recreate the causal mask on every forward pass before GPU training
+        scores = scores.masked_fill(~mask, float('-inf'))
+
         weights = F.softmax(scores, dim=-1)
 
-        out = weights @ V
+        out = weights @ V # think of V as changing the vector of the previous embedding now that we have more context on that embedding
+                          # EX: 'fluffy' and 'blue' adding more context to the next word 'creature'  
+        return out #this matrix is just the value down and value up matrices matmuled
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads):
+        super().__init__()
+        d_k = d_model // num_heads
+
+        self.heads = nn.ModuleList([Head(d_model, d_k, d_k) for _ in range(num_heads)])
+        self.proj = nn.Linear(d_model, d_model)
+
+    def forward(self, x):
+        head_outs = [h(x) for h in self.heads]
+
+        out = torch.cat(head_outs, dim=-1)
+        out = self.proj(out)
         return out
+    
+class Block(nn.Module):
+    def __init__(self, d_model, num_heads, d_ff):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, num_heads)
+        self.feed_forward_network = nn.Sequential(
+            nn.Linear(d_model, d_ff), # expand: d_model -> d_ff(4 * d_model)
+            nn.ReLU(),
+            nn.Linear(d_ff, d_model), # project back: d_ff -> d_model
+        )
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+    
+    def forward(self, x):
+        # Pre-norm(make sure to explain why I chose this instead of Post-norm) + residual connections
+        x = x + self.attention(self.ln1(x)) 
+        x = x + self.feed_forward_network(self.ln2(x))     
+        
+        return x
+    
+class GPT(nn.Module):
+    def __init__(self, vocab_size, d_model, block_size, num_heads, n_layers, d_ff):
+        super().__init__()
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Embedding(block_size, d_model)
+        self.blocks = nn.Sequential(*[Block(d_model, num_heads, d_ff) for _ in range(n_layers)])
+        self.ln_final = nn.LayerNorm(d_model)
+        self.lm_head = nn.Linear(d_model, vocab_size)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+
+        tok_emb = self.token_embedding(idx)
+        pos = torch.arange(T, device=idx.device)
+        pos_emb = self.position_embedding(pos)
+
+        x = tok_emb + pos_emb
+        x = self.blocks(x)
+        x = self.ln_final(x)
+        logits = self.lm_head(x)
+
+        if targets is None:
+            loss = None
+
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
+
+        return logits, loss
 
 sorted_chars = sorted(set(file_content))
+vocab_size = len(sorted_chars)
 
-ints = list(range(len(sorted_chars)))
+ints = list(range(vocab_size))
 
 stoi = dict(zip(sorted_chars, ints)) # maps character : integer
 itos = dict(zip(ints, sorted_chars)) # maps integer : character
@@ -49,8 +133,31 @@ def get_batch(split, batch_size, block_size):
     y = torch.stack([data[i+1 : i + block_size + 1] for i in ii])
     return x, y
 
-xb, yb = get_batch('train', 32, 256)
+@torch.no_grad()
+def estimate_loss(model, eval_iters=200):
+    out = {}
+    model.eval()
 
-print(repr(decoder(xb[0].tolist())))
-print(repr(decoder(yb[0].tolist())))
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
 
+        for k in range(eval_iters):
+            xb, yb = get_batch(split, batch_size, block_size)
+
+            logits, loss = model(xb, yb)
+            losses[k] = loss.item()
+
+        out[split] = losses.mean()
+        
+    model.train()
+    return out
+
+model = GPT(vocab_size, d_model, block_size, num_heads, n_layers, d_ff)
+
+xb, yb = get_batch('train', batch_size, block_size)
+
+logits, loss = model(xb, yb)
+losses = estimate_loss(model)
+
+print(f'(batch_size * block_size, vocab_size) after reshape: {logits.shape}')
+print(f"train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
