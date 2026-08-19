@@ -10,10 +10,15 @@ with open('input.txt', 'r', encoding='utf-8') as file:
 # hyperparameters
 batch_size = 32
 block_size = 256
+
 d_model = 64
 num_heads = 4
 n_layers = 4
 d_ff = 4 * d_model
+
+lr = 3e-4
+max_iters = 5000
+eval_interval = 500
 
 class Head(nn.Module):
     def __init__(self, d_model, d_k, d_v):
@@ -55,12 +60,12 @@ class MultiHeadAttention(nn.Module):
         out = torch.cat(head_outs, dim=-1)
         out = self.proj(out)
         return out
-    
+
 class Block(nn.Module):
     def __init__(self, d_model, num_heads, d_ff):
         super().__init__()
         self.attention = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward_network = nn.Sequential(
+        self.feed_forward_network = nn.Sequential( # MLP layer
             nn.Linear(d_model, d_ff), # expand: d_model -> d_ff(4 * d_model)
             nn.ReLU(),
             nn.Linear(d_ff, d_model), # project back: d_ff -> d_model
@@ -106,6 +111,22 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
+    
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens):
+        model.eval()
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -block_size:]
+
+            logits, loss = self(idx_cond)
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+
+            next_idx = torch.multinomial(probs, num_samples=1) # chose sampling over argmax
+            idx = torch.cat((idx, next_idx), dim=1)
+
+        return idx
 
 sorted_chars = sorted(set(file_content))
 vocab_size = len(sorted_chars)
@@ -135,29 +156,40 @@ def get_batch(split, batch_size, block_size):
 
 @torch.no_grad()
 def estimate_loss(model, eval_iters=200):
-    out = {}
     model.eval()
+    out = {}
 
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
 
         for k in range(eval_iters):
             xb, yb = get_batch(split, batch_size, block_size)
-
             logits, loss = model(xb, yb)
             losses[k] = loss.item()
-
-        out[split] = losses.mean()
         
+        out[split] = losses.mean()
+    
     model.train()
+
     return out
 
 model = GPT(vocab_size, d_model, block_size, num_heads, n_layers, d_ff)
+optimizer = torch.optim.AdamW(lr=lr, params=model.parameters())
 
-xb, yb = get_batch('train', batch_size, block_size)
+for iter in range(max_iters):
 
-logits, loss = model(xb, yb)
-losses = estimate_loss(model)
+    if iter % eval_interval == 0:
+        losses = estimate_loss(model)
+        print(f'iterations: {iter}, train loss: {losses['train']:.4f}, val loss: {losses['val']:.4f}')
+    
+    xb, yb = get_batch('train', batch_size, block_size)
+    logits, loss = model(xb, yb)
 
-print(f'(batch_size * block_size, vocab_size) after reshape: {logits.shape}')
-print(f"train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+context = torch.zeros((1, 1), dtype=torch.long)
+out = model.generate(context, max_new_tokens=500)
+
+print(decoder(out[0].tolist()))
