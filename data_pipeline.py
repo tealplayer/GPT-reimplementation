@@ -28,9 +28,9 @@ class Head(nn.Module):
         self.W_V = nn.Linear(d_model, d_v, bias=False)
 
     def forward(self, x):
-        Q = self.W_Q(x) # Query matrix
-        K = self.W_K(x) # Key matrix - sequence of vectors that can potentially answer the queries
-        V = self.W_V(x) # Value matrix - used to update the embeddings(EX: you want the embedding of one word that's related to another to cause a change to
+        Q = self.W_Q(x) # Query vector - x is the embedding vector
+        K = self.W_K(x) # Key vector - sequence of vectors that can potentially answer the queries
+        V = self.W_V(x) # Value vector(down-projection) - used to update the embeddings(EX: you want the embedding of one word that's related to another to cause a change to
                         # that other word that more specifically encodes the now better known description now that you have that new context)
         d_k = Q.shape[-1]
         scores = Q @ K.transpose(-2, -1) / (d_k**0.5) # computes a dot product to see how well each key matches each query(larger dot product = more aligned)
@@ -43,8 +43,12 @@ class Head(nn.Module):
         weights = F.softmax(scores, dim=-1)
 
         out = weights @ V # think of V as changing the vector of the previous embedding now that we have more context on that embedding
-                          # EX: 'fluffy' and 'blue' adding more context to the next word 'creature'  
-        return out #this matrix is just the value down and value up matrices matmuled
+                          # for each column in the grid, you mulyiply each of the value vectors by the corresponding weight in that column(from the softmax)
+                          # then we add together all of these rescaled values(the weight*value vector) in the column(i.e. each token) to update the embedding
+                          # WARNING: the process described above is transposed so it's actually across rows rather than along columns
+                          # EX: 'fluffy' and 'blue' adding more context to the next word 'creature' bc they have large proportions of the value vectors, while the other words get
+                          # zeroed out
+        return out # result vector
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
@@ -55,10 +59,11 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(d_model, d_model)
 
     def forward(self, x):
-        head_outs = [h(x) for h in self.heads]
+        head_outs = [h(x) for h in self.heads] # heads_out[h] is a single head's result vector [B, T, 64]
 
-        out = torch.cat(head_outs, dim=-1)
-        out = self.proj(out)
+        out = torch.cat(head_outs, dim=-1) # we concatenate rather than add since all of these head's dimensions mean different things to each head, even tho they're all 64
+        out = self.proj(out) # does an up-projection on all of these head's respective result vectors so that they live in the same space
+        
         return out
 
 class Block(nn.Module):
