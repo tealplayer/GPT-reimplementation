@@ -7,13 +7,18 @@ torch.manual_seed(1337)
 with open('input.txt', 'r', encoding='utf-8') as file:
     file_content = file.read()
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no gpu')
+
 # hyperparameters
-batch_size = 32
+batch_size = 64
 block_size = 256
 
-d_model = 64
-num_heads = 4
-n_layers = 4
+d_model = 384
+num_heads = 6
+n_layers = 6
 d_ff = 4 * d_model
 
 lr = 3e-4
@@ -26,6 +31,7 @@ class Head(nn.Module):
         self.W_Q = nn.Linear(d_model, d_k, bias=False)
         self.W_K = nn.Linear(d_model, d_k, bias=False)
         self.W_V = nn.Linear(d_model, d_v, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
         Q = self.W_Q(x) # Query vector - x is the embedding vector
@@ -37,8 +43,7 @@ class Head(nn.Module):
         
         # mask the scores()
         T = scores.shape[-1]
-        mask = torch.tril(torch.ones(T, T)).bool() # make sure to stop having it recreate the causal mask on every forward pass before GPU training
-        scores = scores.masked_fill(~mask, float('-inf'))
+        scores = scores.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
 
         weights = F.softmax(scores, dim=-1)
 
@@ -157,6 +162,8 @@ def get_batch(split, batch_size, block_size):
 
     x = torch.stack([data[i : i + block_size] for i in ii])
     y = torch.stack([data[i+1 : i + block_size + 1] for i in ii])
+    x, y = x.to(device), y.to(device)
+
     return x, y
 
 @torch.no_grad()
@@ -179,6 +186,8 @@ def estimate_loss(model, eval_iters=200):
     return out
 
 model = GPT(vocab_size, d_model, block_size, num_heads, n_layers, d_ff)
+model = model.to(device)
+
 optimizer = torch.optim.AdamW(lr=lr, params=model.parameters())
 
 for iter in range(max_iters):
@@ -194,7 +203,7 @@ for iter in range(max_iters):
     loss.backward()
     optimizer.step()
 
-context = torch.zeros((1, 1), dtype=torch.long)
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
 out = model.generate(context, max_new_tokens=500)
 
 print(decoder(out[0].tolist()))
