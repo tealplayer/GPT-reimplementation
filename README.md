@@ -4,14 +4,14 @@ A from-scratch GPT implementation, built up step by step.
 
 ## Contents
 
-- `data_pipeline.py` — character-level tokenizer (`stoi`/`itos`), train/val split, and `get_batch` for sampling `(x, y)` training batches.
-- `input.txt` — the Tiny Shakespeare corpus (~1.1 MB) used as training data.
+- `gpt-reimplementation.ipynb` — the full notebook: character-level tokenizer, train/val split and batching, multi-head self-attention, transformer blocks, the training loop, sampling, and attention-pattern analysis.
+- `input.txt` — the Tiny Shakespeare corpus (~1.1 MB) used as training data (the notebook also downloads it directly).
 
 ## Usage
 
 ```bash
-pip install torch
-python data_pipeline.py
+pip install torch matplotlib
+jupyter notebook gpt-reimplementation.ipynb
 ```
 
-Prints a decoded input/target batch pair to sanity-check the pipeline.
+Run the cells top to bottom to train the model and generate sample text.
