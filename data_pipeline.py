@@ -26,6 +26,8 @@ max_iters = 5000
 eval_interval = 500
 
 class Head(nn.Module):
+    tril: torch.Tensor
+
     def __init__(self, d_model, d_k, d_v):
         super().__init__()
         self.W_Q = nn.Linear(d_model, d_k, bias=False)
@@ -45,9 +47,9 @@ class Head(nn.Module):
         T = scores.shape[-1]
         scores = scores.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
 
-        weights = F.softmax(scores, dim=-1)
+        attention_weights = F.softmax(scores, dim=-1)
 
-        out = weights @ V # think of V as changing the vector of the previous embedding now that we have more context on that embedding
+        out = attention_weights @ V # think of V as changing the vector of the previous embedding now that we have more context on that embedding
                           # for each column in the grid, you mulyiply each of the value vectors by the corresponding weight in that column(from the softmax)
                           # then we add together all of these rescaled values(the weight*value vector) in the column(i.e. each token) to update the embedding
                           # WARNING: the process described above is transposed so it's actually across rows rather than along columns
@@ -66,8 +68,8 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         head_outs = [h(x) for h in self.heads] # heads_out[h] is a single head's result vector [B, T, 64]
 
-        out = torch.cat(head_outs, dim=-1) # we concatenate rather than add since all of these head's dimensions mean different things to each head, even tho they're all 64
-        out = self.proj(out) # does an up-projection on all of these head's respective result vectors so that they live in the same space
+        out = torch.cat(head_outs, dim=-1) # we concatenate rather than add since all of these head's dimensions mean different things to each head, even tho they're all 64d
+        out = self.proj(out) # does an up-projection(W_O) on all of these head's respective result vectors so that they live in the same space
         
         return out
 
@@ -188,22 +190,23 @@ def estimate_loss(model, eval_iters=200):
 model = GPT(vocab_size, d_model, block_size, num_heads, n_layers, d_ff)
 model = model.to(device)
 
-optimizer = torch.optim.AdamW(lr=lr, params=model.parameters())
+if __name__ == '__main__':
+    optimizer = torch.optim.AdamW(lr=lr, params=model.parameters())
 
-for iter in range(max_iters):
+    for iter in range(max_iters):
+        if iter % eval_interval == 0:
+            losses = estimate_loss(model)
+            print(f'iterations: {iter}, train loss: {losses["train"]:.4f}, val loss: {losses["val"]:.4f}')
 
-    if iter % eval_interval == 0:
-        losses = estimate_loss(model)
-        print(f'iterations: {iter}, train loss: {losses['train']:.4f}, val loss: {losses['val']:.4f}')
-    
-    xb, yb = get_batch('train', batch_size, block_size)
-    logits, loss = model(xb, yb)
+        xb, yb = get_batch('train', batch_size, block_size)
+        logits, loss = model(xb, yb)
 
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-out = model.generate(context, max_new_tokens=500)
+    torch.save(model.state_dict(), 'model.pt')
 
-print(decoder(out[0].tolist()))
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    out = model.generate(context, max_new_tokens=500)
+    print(decoder(out[0].tolist()))
