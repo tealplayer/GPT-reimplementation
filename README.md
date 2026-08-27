@@ -2,6 +2,11 @@
 
 A from-scratch GPT implementation, built up step by step.
 
+Based on:
+
+1. `Attention is All You Need` - Vaswani et al. 2017
+2. `A Mathematical Framework for Transformer Circuits` - Elhage et al. 2021
+
 ## Contents
 
 - `gpt-reimplementation.ipynb` — the full notebook: character-level tokenizer, train/val split and batching, multi-head self-attention, transformer blocks, the training loop, sampling, and attention-pattern analysis.
